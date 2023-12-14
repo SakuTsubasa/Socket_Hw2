@@ -49,7 +49,7 @@ void *handle_client(void *client_socket) {
             printf("client%d disconnect!\n",ID);
             break;
         }
-        //客戶端下載文件1
+        //客戶端下載文件
         if (strcmp(buffer, "read\n") == 0) {
 
             memset(buffer, 0, 1024);
