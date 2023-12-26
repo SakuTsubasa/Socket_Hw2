@@ -8,11 +8,31 @@
 
 #define PORT 8080           // 定義要連接的服務器端口
 
+void read_message(int socket, char *buffer, size_t max_length) {
+    char *ptr = buffer;
+    size_t left = max_length;
+    while (left > 1) {
+        int nread = read(socket, ptr, 1);
+        if (nread <= 0) {
+            break; // 斷開連接或錯誤
+        }
+        if (*ptr == '\n') { // 消息結束
+            break;
+        }
+        ptr++;
+        left--;
+    }
+    *ptr = '\0'; // 確保字符串結束
+}
+
 int main() {
     int clientSocket;                         // 定義客戶端套接字
     struct sockaddr_in serverAddress;         // 定義服務器地址結構
     char *message = "Hello from client";      // 定義要發送的消息
     char buffer[1024] = {0};                  // 定義數據緩衝區
+    char username[50];
+    char password[50];
+    char server_reply[100];
 
     // 創建套接字
     clientSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -36,9 +56,20 @@ int main() {
         return -1;
     }
 
-
-    //通訊loop
-    while(1) {
+    printf("輸入帳號:");
+    fgets(username, sizeof(username), stdin);
+    username[strcspn(username, "\n")] = 0; // 去除換行符
+    send(clientSocket, username, strlen(username), 0);
+    printf("\n輸入密碼:");
+    fgets(password, sizeof(password), stdin);
+    password[strcspn(password, "\n")] = 0; // 去除換行符
+    send(clientSocket, password, strlen(password), 0);
+    
+    read(clientSocket, server_reply, sizeof(server_reply));
+    printf("Server response: %s\n", server_reply);
+    if (strcmp(server_reply,"Login failed") !=0 ){
+        while(1) {
+        
         printf("Enter message: ");
         fgets(buffer, 1024, stdin);  // 從標準輸入讀取輸入
 
@@ -51,63 +82,109 @@ int main() {
         }
         //下載文件
         if (strcmp(buffer, "read\n") == 0) {
-            memset(buffer, 0, 1024);
+            char deny[1024];
+            char permission[1024];
+            char status[1024];
+            memset(buffer, 0, sizeof(buffer));
             printf("Enter File nane: ");
             fgets(buffer, 1024, stdin);
             //去除\n
             buffer[strcspn(buffer,"\n")]=0;
             //A傳送想要的文件名稱給Server
-            send(clientSocket, buffer, 1024,0);
-            FILE *fp = fopen(buffer,"wb");
-            while(1){
-                unsigned char recvBuff[1024];
-                int nread = read(clientSocket, recvBuff, 1024);
-                if(nread > 0){
-                    //B 收到文件給 
-                    fwrite(recvBuff, 1, nread, fp);
+            send(clientSocket, buffer, strlen(buffer),0);
+            //B接收檔案的讀寫狀態
+            memset(status, 0, sizeof(status));
+            read_message(clientSocket, status, 1024);
+            if (strcmp(status,"safe")==0){
+                memset(permission, 0, sizeof(permission));
+                memset(status, 0, sizeof(status));
+                //C接收檔案的權限狀態
+                read(clientSocket, permission, 7);
+                if (strcmp(permission, "accept") == 0){
+                    printf("Permission accept\n");
+                    printf("正在下載檔案...\n");
+                    FILE *fp = fopen(buffer,"wb");
+                    while(1){
+                        unsigned char recvBuff[1024];
+                        memset(recvBuff, 0, 1024);  
+                        int nread = read(clientSocket, recvBuff, 1024);
+                        if(nread > 0){
+                            //B 收到文件
+                            fwrite(recvBuff, 1, nread, fp);
+                        }
+                        if(nread < 1024){
+                            if (strcmp(recvBuff, " ") == 0) {
+                            break;
+                        }   
+                            if (feof(fp))
+                                printf("End of file\n");
+                            if (ferror(fp))
+                                printf("Error reading\n");
+                            break;
+                        }
+                        
+                        break;
+                    }
+                    printf("下載完成\n");
+                    memset(status, 0, 1024);
+                    fclose(fp);
+                }else if((strcmp(permission, "reject") == 0)){
+                    printf("Permission reject\n");
+                }else{
+                    printf("Error C: permission:%s\n",permission);
                 }
-                if(nread < 1024){
-                    if (feof(fp))
-                        printf("End of file\n");
-                    if (ferror(fp))
-                        printf("Error reading\n");
-                    break;
-                }
-                
+            }else if (strcmp(status,"lock")==0){
+                printf("檔案正在被使用,晚點再試\n");
+                memset(status, 0, 1024);
+            }else{
+                //read(clientSocket, permission, 6);
+                printf("Error B: status:%s\n",status);
+                memset(status, 0, 1024);
             }
-            fclose(fp);
+            
+            
         }
         //上傳文件
         if (strcmp(buffer, "write\n") == 0) {
-            memset(buffer, 0, 1024);
+            char permission[1024];
+            char status[1024];
+            memset(buffer, 0, sizeof(buffer));
             //輸入文件名稱
-            printf("Enter File nane: ");
+            printf("Enter File nane and mode(overwrite/append): ");
             fgets(buffer, 1024, stdin);
             //去除\n
             buffer[strcspn(buffer,"\n")]=0;
+            //A傳送文件名稱與模式
             send(clientSocket, buffer, strlen(buffer), 0);
-            FILE *fp = fopen(buffer, "rb");
-            memset(buffer, 0, 1024);
-            if(fp == NULL){
-                perror("File open error");
-                return 1;
-            }   
-
-            while(1){
-                unsigned char buff[1024]={0};
-                int nread = fread(buff,1,1024,fp);
-                if(nread > 0){         
-                    write(clientSocket, buff, nread);
+            
+            //接收檔案的讀寫狀態
+            memset(status, 0, sizeof(status));
+            read_message(clientSocket, status, 1024);
+            if (strcmp(status,"safe")==0){
+                memset(permission, 0, sizeof(permission));
+                //B接收檔案的權限狀態
+                read(clientSocket, permission, 6);
+                if(strcmp(permission,"accept") ==0){
+                    printf("請輸入內容:\n");
+                    //開始寫檔案
+                    memset(buffer, 0, sizeof(buffer));
+                    fgets(buffer, 1024, stdin);
+                    //去除\n
+                    buffer[strcspn(buffer,"\n")]=0;
+                    //C傳送文件內容
+                    send(clientSocket, buffer, strlen(buffer), 0);
+                }else{
+                    printf("不符合權限\n");
                 }
-                if(nread < 1024){
-                    if (feof(fp))
-                        printf("End of file\n");
-                    if (ferror(fp))
-                        printf("Error reading\n");
-                    break;
-                }
+                
+            }else if(strcmp(status,"lock") ==0){
+                printf("檔案正在被使用,晚點再試\n");
+            }else{
+                printf("Error B: status:%s\n",status);
             }
-            fclose(fp); 
+            //printf("%s\n",status);
+            
+            
         }
         //建立文件
         if (strcmp(buffer, "create\n") == 0) {
@@ -131,6 +208,8 @@ int main() {
             buffer[strcspn(buffer,"\n")]=0;
             send(clientSocket, buffer, strlen(buffer), 0);            
             memset(buffer, 0, 1024);
+            read(clientSocket, buffer, 1024);
+            printf("%s\n",buffer);
         }
 
         memset(buffer, 0, 1024);  // 清空緩衝區
@@ -138,7 +217,7 @@ int main() {
         // read(clientSocket, buffer, 1024);
         // printf("Message from server: %s\n", buffer);
     }
-
+    }
 // 關閉套接字
     close(clientSocket);
 
